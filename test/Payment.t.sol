@@ -37,7 +37,7 @@ contract PaymentTest is Test {
         vm.deal(buyer, 100 ether);
     }
     
-    function testSetup() public {
+    function testSetup() public view {
         assertTrue(payment.hasRole(payment.DEFAULT_ADMIN_ROLE(), admin));
         assertTrue(payment.hasRole(payment.TICKET_CONTRACT_ROLE(), ticketContract));
         assertEq(payment.getPlatformFee(), 25); // 2.5%
@@ -85,8 +85,9 @@ contract PaymentTest is Test {
     
     function testWithdrawFees() public {
         // First process a payment to accumulate fees
-        vm.prank(ticketContract);
+        vm.startPrank(ticketContract);
         payment.processPrimaryPurchase{value: PRICE}(organizer, PRICE);
+        vm.stopPrank();
         
         uint256 initialAdminBalance = admin.balance;
         uint256 contractBalance = address(payment).balance;
@@ -115,55 +116,58 @@ contract PaymentTest is Test {
     }
     
     function testPauseUnpause() public {
-        vm.startPrank(admin);
-        
+        // Pause contract
+        vm.prank(admin);
         payment.pause();
         assertTrue(payment.paused());
         
         // Try to process payment while paused
+        vm.startPrank(ticketContract);
         vm.expectRevert("Pausable: paused");
-        vm.prank(ticketContract);
         payment.processPrimaryPurchase{value: PRICE}(organizer, PRICE);
+        vm.stopPrank();
         
         // Unpause and verify payment works
+        vm.startPrank(admin);
         payment.unpause();
         assertFalse(payment.paused());
+        vm.stopPrank();
         
         vm.prank(ticketContract);
         bool success = payment.processPrimaryPurchase{value: PRICE}(organizer, PRICE);
         assertTrue(success);
-        
-        vm.stopPrank();
     }
     
     function testFailUnauthorizedWithdraw() public {
-        vm.prank(buyer);
         vm.expectRevert("AccessControl:");
+        vm.prank(buyer);
         payment.withdrawFees();
     }
     
     function testFailUnauthorizedSetFee() public {
-        vm.prank(buyer);
         vm.expectRevert("AccessControl:");
+        vm.prank(buyer);
         payment.setPlatformFee(30);
     }
     
     function testFailUnauthorizedPurchaseProcess() public {
-        vm.prank(buyer);
         vm.expectRevert("Caller is not ticket contract");
+        vm.prank(buyer);
         payment.processPrimaryPurchase{value: PRICE}(organizer, PRICE);
     }
     
     function testFailInsufficientPayment() public {
-        vm.prank(ticketContract);
+        vm.startPrank(ticketContract);
         vm.expectRevert("Insufficient payment");
         payment.processPrimaryPurchase{value: PRICE - 0.1 ether}(organizer, PRICE);
+        vm.stopPrank();
     }
     
     function testFailInvalidOrganizer() public {
-        vm.prank(ticketContract);
+        vm.startPrank(ticketContract);
         vm.expectRevert("Invalid organizer address");
         payment.processPrimaryPurchase{value: PRICE}(address(0), PRICE);
+        vm.stopPrank();
     }
     
     function testExcessPaymentRefund() public {
