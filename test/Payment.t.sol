@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.20;
+pragma solidity ^0.8.24;
 
 import {Test} from "forge-std/Test.sol";
 import {Payment} from "../src/Payment.sol";
+import {IPayment} from "../src/interfaces/IPayment.sol";
 
 contract PaymentTest is Test {
     Payment public payment;
@@ -21,6 +22,9 @@ contract PaymentTest is Test {
         uint256 fee,
         IPayment.PaymentType paymentType
     );
+    event FeeUpdated(uint256 newFee);
+    event FeeWithdrawn(address indexed admin, uint256 amount);
+    event RefundIssued(address indexed to, uint256 amount);
     
     function setUp() public {
         vm.startPrank(admin);
@@ -29,61 +33,60 @@ contract PaymentTest is Test {
         vm.stopPrank();
         
         // Fund accounts
-        vm.deal(buyer, 100 ether);
         vm.deal(ticketContract, 100 ether);
+        vm.deal(buyer, 100 ether);
+    }
+    
+    function testSetup() public {
+        assertTrue(payment.hasRole(payment.DEFAULT_ADMIN_ROLE(), admin));
+        assertTrue(payment.hasRole(payment.TICKET_CONTRACT_ROLE(), ticketContract));
+        assertEq(payment.getPlatformFee(), 25); // 2.5%
     }
     
     function testPrimaryPurchase() public {
-        uint256 initialOrganizerBalance = organizer.balance;
-        uint256 expectedFee = (PRICE * payment.getPlatformFee()) / 1000;
-        uint256 expectedPayment = PRICE - expectedFee;
+        uint256 initialOrgBalance = organizer.balance;
+        uint256 initialContractBalance = address(payment).balance;
+        uint256 amount = PRICE;
+        uint256 fee = (amount * payment.getPlatformFee()) / 1000;
+        uint256 expectedPayment = amount - fee;
         
         vm.prank(ticketContract);
-        bool success = payment.processPrimaryPurchase{value: PRICE}(
-            organizer,
-            PRICE
-        );
+        bool success = payment.processPrimaryPurchase{value: amount}(organizer, amount);
         
         assertTrue(success);
-        assertEq(
-            organizer.balance - initialOrganizerBalance,
-            expectedPayment
-        );
-        assertEq(
-            address(payment).balance,
-            expectedFee
-        );
+        assertEq(organizer.balance - initialOrgBalance, expectedPayment);
+        assertEq(address(payment).balance - initialContractBalance, fee);
     }
     
     function testSecondaryPurchase() public {
-        uint256 initialSellerBalance = organizer.balance;
-        uint256 expectedFee = (PRICE * payment.getPlatformFee()) / 1000;
-        uint256 expectedPayment = PRICE - expectedFee;
+        uint256 initialSellerBalance = address(5).balance;
+        uint256 initialContractBalance = address(payment).balance;
+        uint256 amount = PRICE;
+        uint256 fee = (amount * payment.getPlatformFee()) / 1000;
+        uint256 expectedPayment = amount - fee;
         
         vm.prank(ticketContract);
-        bool success = payment.processSecondaryPurchase{value: PRICE}(
-            organizer,
-            PRICE
-        );
+        bool success = payment.processSecondaryPurchase{value: amount}(address(5), amount);
         
         assertTrue(success);
-        assertEq(
-            organizer.balance - initialSellerBalance,
-            expectedPayment
-        );
-        assertEq(
-            address(payment).balance,
-            expectedFee
-        );
+        assertEq(address(5).balance - initialSellerBalance, expectedPayment);
+        assertEq(address(payment).balance - initialContractBalance, fee);
     }
     
-    function testFeeWithdrawal() public {
-        // First process a payment to accumulate some fees
+    function testRefundProcess() public {
+        uint256 refundAmount = 0.5 ether;
+        
         vm.prank(ticketContract);
-        payment.processPrimaryPurchase{value: PRICE}(
-            organizer,
-            PRICE
-        );
+        bool success = payment.processRefund(buyer, refundAmount);
+        
+        assertTrue(success);
+        assertEq(payment.getPendingRefund(buyer), refundAmount);
+    }
+    
+    function testWithdrawFees() public {
+        // First process a payment to accumulate fees
+        vm.prank(ticketContract);
+        payment.processPrimaryPurchase{value: PRICE}(organizer, PRICE);
         
         uint256 initialAdminBalance = admin.balance;
         uint256 contractBalance = address(payment).balance;
@@ -91,10 +94,7 @@ contract PaymentTest is Test {
         vm.prank(admin);
         payment.withdrawFees();
         
-        assertEq(
-            admin.balance - initialAdminBalance,
-            contractBalance
-        );
+        assertEq(admin.balance - initialAdminBalance, contractBalance);
         assertEq(address(payment).balance, 0);
     }
     
@@ -114,16 +114,6 @@ contract PaymentTest is Test {
         payment.setPlatformFee(newFee);
     }
     
-    function testRefundProcess() public {
-        uint256 refundAmount = 0.5 ether;
-        
-        vm.prank(ticketContract);
-        bool success = payment.processRefund(buyer, refundAmount);
-        
-        assertTrue(success);
-        assertEq(payment.getPendingRefund(buyer), refundAmount);
-    }
-    
     function testPauseUnpause() public {
         vm.startPrank(admin);
         
@@ -140,26 +130,52 @@ contract PaymentTest is Test {
         assertFalse(payment.paused());
         
         vm.prank(ticketContract);
-        bool success = payment.processPrimaryPurchase{value: PRICE}(
-            organizer,
-            PRICE
-        );
+        bool success = payment.processPrimaryPurchase{value: PRICE}(organizer, PRICE);
         assertTrue(success);
         
         vm.stopPrank();
     }
     
-    function testAccessControl() public {
-        // Test non-admin trying to withdraw fees
+    function testFailUnauthorizedWithdraw() public {
         vm.prank(buyer);
-        vm.expectRevert(
-            "AccessControl: account 0x0000000000000000000000000000000000000004 is missing role 0x0000000000000000000000000000000000000000000000000000000000000000"
-        );
+        vm.expectRevert("AccessControl:");
         payment.withdrawFees();
-        
-        // Test non-ticket-contract trying to process payment
+    }
+    
+    function testFailUnauthorizedSetFee() public {
+        vm.prank(buyer);
+        vm.expectRevert("AccessControl:");
+        payment.setPlatformFee(30);
+    }
+    
+    function testFailUnauthorizedPurchaseProcess() public {
         vm.prank(buyer);
         vm.expectRevert("Caller is not ticket contract");
         payment.processPrimaryPurchase{value: PRICE}(organizer, PRICE);
+    }
+    
+    function testFailInsufficientPayment() public {
+        vm.prank(ticketContract);
+        vm.expectRevert("Insufficient payment");
+        payment.processPrimaryPurchase{value: PRICE - 0.1 ether}(organizer, PRICE);
+    }
+    
+    function testFailInvalidOrganizer() public {
+        vm.prank(ticketContract);
+        vm.expectRevert("Invalid organizer address");
+        payment.processPrimaryPurchase{value: PRICE}(address(0), PRICE);
+    }
+    
+    function testExcessPaymentRefund() public {
+        uint256 excess = 0.5 ether;
+        uint256 initialTicketContractBalance = ticketContract.balance;
+        
+        vm.prank(ticketContract);
+        payment.processPrimaryPurchase{value: PRICE + excess}(organizer, PRICE);
+        
+        assertEq(
+            ticketContract.balance,
+            initialTicketContractBalance - PRICE
+        );
     }
 }

@@ -11,7 +11,11 @@ interface IPayment {
     }
 
     // Enums
-    enum PaymentType { PRIMARY, SECONDARY, REFUND }
+    enum PaymentType {
+        PRIMARY,
+        SECONDARY,
+        REFUND
+    }
 
     // Events
     event PaymentProcessed(
@@ -29,11 +33,11 @@ interface IPayment {
     function processPrimaryPurchase(address organizer, uint256 price) external payable returns (bool);
     function processSecondaryPurchase(address seller, uint256 price) external payable returns (bool);
     function processRefund(address to, uint256 amount) external returns (bool);
-    
+
     // Admin functions
     function setPlatformFee(uint256 newFee) external;
     function withdrawFees() external;
-    
+
     // View functions
     function getPlatformFee() external view returns (uint256);
     function getAccumulatedFees() external view returns (uint256);
