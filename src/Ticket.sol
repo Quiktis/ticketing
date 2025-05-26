@@ -60,7 +60,7 @@ contract Ticket is ERC721, ReentrancyGuard, AccessControl, Pausable {
         uint256 resalePrice;
         TicketStatus status;
     }
-
+  
     // Enums
     enum EventStatus {
         DRAFT,
